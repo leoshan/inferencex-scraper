@@ -73,7 +73,7 @@ def curl_fetch(url: str, timeout: int = 120) -> Tuple[Optional[str], int]:
     """
     try:
         result = subprocess.run(
-            ['curl', '-sL', '--max-time', str(timeout),
+            ['curl', '-sL', '--compressed', '--max-time', str(timeout),
              '-w', '\n__HTTP_CODE__%{http_code}',
              '-H', 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
              '-H', 'Accept: application/json',
