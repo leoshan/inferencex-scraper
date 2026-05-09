@@ -1,4 +1,3 @@
-# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -39,3 +38,6 @@ web/*.log
 # 系统文件
 .DS_Store
 Thumbs.db
+logs/
+glm5_output/
+InferenceX/

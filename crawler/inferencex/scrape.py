@@ -54,6 +54,8 @@ MODEL_DISPLAY_NAMES = {
     "minimaxm2.5": "MiniMax-M2.5",
     "qwen3.5": "Qwen-3.5-397B-A17B",
     "glm5": "GLM-5",
+    "glm5.1": "GLM-5.1",
+    "dsv4": "DeepSeek-V4-Pro",
 }
 
 # 反向映射: display name → model ID
@@ -68,6 +70,8 @@ USER_FRIENDLY_NAMES = {
     "MiniMax M2.5": "minimaxm2.5",
     "Qwen 3.5 397B-A17B": "qwen3.5",
     "GLM 5": "glm5",
+    "GLM 5.1": "glm5.1",
+    "DeepSeek V4 Pro": "dsv4",
 }
 
 DEFAULT_MODELS = list(MODEL_DISPLAY_NAMES.keys())  # 默认采集所有已知模型
