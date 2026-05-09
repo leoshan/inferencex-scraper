@@ -1,7 +1,41 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
-json_data/
+*.pyd
+.Python
+*.so
+
+node_modules/*
+venv/*
+.vite/*
+
+# 虚拟环境
+web/venv/
+venv/
+.venv/
+
+# 数据文件
+data/raw/
+data/processed/
 *.csv
 *.xlsx
+*.json
 
+# 数据库
+data/db/*.db
+*.db
+
+# 日志
+web/*.log
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db

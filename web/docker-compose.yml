@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # TimescaleDB
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: trend_tracker
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+
+  # 后端 API
+  api:
+    build:
+      context: ..
+      dockerfile: web/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/trend_tracker
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8000:8000"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ..:/app
+    command: python run.py api
+
+  # 数据采集服务
+  collector:
+    build:
+      context: ..
+      dockerfile: web/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/trend_tracker
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    volumes:
+      - ..:/app
+    command: python run.py collector
+
+volumes:
+  timescale_data:
+  redis_data:

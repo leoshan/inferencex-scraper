@@ -228,3 +228,396 @@
 - `main.py`：串联所有流程，输出结论。
 
 以上逻辑可直接指导 Python 代码实现，无需额外设计。
+
+---
+
+# 趋势跟踪系统架构
+
+## 一、系统目标
+
+基于现有爬虫能力，构建 OpenRouter 模型调用量与应用场景趋势跟踪系统：
+
+1. **模型调用量趋势** - 各模型的 token 使用量、请求数随时间变化
+2. **应用场景分布** - 不同应用（claude-code、cursor 等）对各模型的使用情况
+3. **异常检测与告警** - 自动识别调用量异常波动
+4. **可视化展示** - 前端界面展示趋势图表和分析报告
+
+## 二、技术选型
+
+| 层面 | 技术选型 | 理由 |
+|-----|---------|------|
+| **时序数据库** | TimescaleDB | PostgreSQL 扩展，支持高效时间范围查询、自动分区、压缩 |
+| **缓存** | Redis | 缓存热门查询、实时数据 |
+| **后端框架** | FastAPI | 异步支持好，自动生成 API 文档 |
+| **前端框架** | React 18 + TypeScript | 生态成熟，组件丰富 |
+| **图表库** | ECharts | 支持复杂交互，中文友好 |
+| **UI 组件** | Ant Design | 企业级组件库 |
+| **数据请求** | TanStack Query | 自动缓存，后台刷新 |
+
+## 三、系统架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        前端展示层 (React)                         │
+│  趋势图表 │ 应用分布图 │ 异常告警 │ 数据报表 │ 交互筛选           │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      后端服务层 (FastAPI)                         │
+│  REST API │ 趋势分析服务 │ 异常检测服务 │ 数据聚合服务            │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        数据存储层                                 │
+│  TimescaleDB (时序数据) │ Redis (缓存) │ SQLite (元数据)         │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                数据采集层 (扩展现有爬虫)                           │
+│  APScheduler 调度器 │ 复用 get_app_usage/get_model_details      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 四、数据采集层设计
+
+### 4.1 采集数据类型
+
+| 数据类型 | API 端点 | 采集频率 | 数据内容 |
+|---------|---------|---------|---------|
+| 模型日调用量 | `/api/frontend/stats/top-apps-for-model` | 每小时 | 每日聚合 token 数、请求数 |
+| 应用使用分布 | `/api/frontend/stats/app-usage` | 每6小时 | 各应用的模型使用分布 |
+| 模型列表 | `/api/frontend/models` | 每日 | 模型元数据、价格、性能 |
+| 模型详情 | `/{model}/benchmarks` | 每周 | 基准测试分数 |
+
+### 4.2 新增目录结构
+
+```
+openrouter/trend_tracker/
+├── __init__.py
+├── scheduler.py      # APScheduler 定时调度
+├── collector.py      # 数据收集器（复用现有爬虫）
+├── models.py         # 数据模型定义
+└── config.py         # 采集配置
+```
+
+### 4.3 调度策略
+
+```python
+# 每小时采集模型调用量
+scheduler.add_job(collect_model_usage, trigger=IntervalTrigger(hours=1))
+
+# 每6小时采集应用分布
+scheduler.add_job(collect_app_distribution, trigger=IntervalTrigger(hours=6))
+
+# 每日更新模型列表
+scheduler.add_job(collect_model_list, trigger=CronTrigger(hour=2, minute=0))
+
+# 每周采集基准测试
+scheduler.add_job(collect_benchmarks, trigger=CronTrigger(day_of_week='mon', hour=3))
+```
+
+## 五、数据存储层设计
+
+### 5.1 TimescaleDB 数据模型
+
+```sql
+-- 模型每日调用量 (时序超级表)
+CREATE TABLE model_usage_daily (
+    time            TIMESTAMPTZ NOT NULL,
+    model_slug      VARCHAR(255) NOT NULL,
+    app_name        VARCHAR(255),
+    prompt_tokens   BIGINT DEFAULT 0,
+    completion_tokens BIGINT DEFAULT 0,
+    total_tokens    BIGINT DEFAULT 0,
+    requests        BIGINT DEFAULT 0,
+    cache_hits      BIGINT DEFAULT 0,
+    provider_name   VARCHAR(100),
+    PRIMARY KEY (time, model_slug, app_name)
+);
+
+SELECT create_hypertable('model_usage_daily', 'time', chunk_time_interval => INTERVAL '1 day');
+
+-- 应用使用分布表
+CREATE TABLE app_distribution (
+    time            TIMESTAMPTZ NOT NULL,
+    app_name        VARCHAR(255) NOT NULL,
+    model_slug      VARCHAR(255) NOT NULL,
+    token_share     DECIMAL(10, 4),
+    total_tokens    BIGINT,
+    PRIMARY KEY (time, app_name, model_slug)
+);
+
+SELECT create_hypertable('app_distribution', 'time', chunk_time_interval => INTERVAL '1 day');
+
+-- 模型元数据表
+CREATE TABLE model_metadata (
+    model_slug      VARCHAR(255) PRIMARY KEY,
+    display_name    VARCHAR(255),
+    provider        VARCHAR(100),
+    context_length  INTEGER,
+    pricing_prompt  DECIMAL(15, 10),
+    pricing_completion DECIMAL(15, 10),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 异常告警表
+CREATE TABLE anomaly_alerts (
+    id              SERIAL PRIMARY KEY,
+    time            TIMESTAMPTZ NOT NULL,
+    model_slug      VARCHAR(255),
+    app_name        VARCHAR(255),
+    anomaly_type    VARCHAR(50),  -- 'spike', 'drop', 'zero'
+    severity        VARCHAR(20),  -- 'low', 'medium', 'high'
+    details         JSONB,
+    acknowledged    BOOLEAN DEFAULT FALSE
+);
+
+-- 索引
+CREATE INDEX idx_usage_model ON model_usage_daily (model_slug, time DESC);
+CREATE INDEX idx_usage_app ON model_usage_daily (app_name, time DESC);
+CREATE INDEX idx_distribution_app ON app_distribution (app_name, time DESC);
+```
+
+### 5.2 数据保留策略
+
+```sql
+-- 原始数据保留 90 天
+SELECT add_retention_policy('model_usage_daily', INTERVAL '90 days');
+
+-- 7 天前数据自动压缩
+ALTER TABLE model_usage_daily SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'model_slug'
+);
+SELECT add_compression_policy('model_usage_daily', INTERVAL '7 days');
+
+-- 周聚合视图
+CREATE MATERIALIZED VIEW model_usage_weekly
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('7 days', time) AS week,
+    model_slug,
+    app_name,
+    SUM(prompt_tokens) AS prompt_tokens,
+    SUM(completion_tokens) AS completion_tokens,
+    SUM(total_tokens) AS total_tokens,
+    SUM(requests) AS requests
+FROM model_usage_daily
+GROUP BY week, model_slug, app_name;
+```
+
+## 六、数据分析层设计
+
+### 6.1 趋势分析算法
+
+```python
+class TrendAnalyzer:
+    def calculate_moving_average(self, df, window=7, column='total_tokens'):
+        """计算移动平均"""
+        df['ma_7'] = df[column].rolling(window=window).mean()
+        df['ma_30'] = df[column].rolling(window=30).mean()
+        return df
+
+    def calculate_growth_rate(self, df, column='total_tokens'):
+        """计算增长率"""
+        recent = df.tail(7)[column].sum()
+        previous = df.tail(14).head(7)[column].sum()
+        growth_rate = (recent - previous) / previous * 100 if previous > 0 else 0
+        return {
+            'growth_rate': growth_rate,
+            'trend': 'increasing' if growth_rate > 5 else 'decreasing' if growth_rate < -5 else 'stable'
+        }
+
+    def detect_seasonality(self, df, column='total_tokens'):
+        """检测周期性"""
+        values = df[column].values
+        autocorr_weekly = pd.Series(values).autocorr(lag=7)
+        return {'has_seasonality': autocorr_weekly > 0.5, 'weekly_autocorr': autocorr_weekly}
+```
+
+### 6.2 异常检测算法
+
+```python
+class AnomalyDetector:
+    def detect_spikes(self, df, column='total_tokens', threshold=3.0):
+        """检测突发增长 (Z-Score)"""
+        mean = df[column].mean()
+        std = df[column].std()
+        anomalies = []
+        for _, row in df.iterrows():
+            z_score = (row[column] - mean) / std if std > 0 else 0
+            if abs(z_score) > threshold:
+                anomalies.append({
+                    'time': row['time'],
+                    'value': row[column],
+                    'z_score': z_score,
+                    'type': 'spike' if z_score > 0 else 'drop',
+                    'severity': 'high' if abs(z_score) > 5 else 'medium'
+                })
+        return anomalies
+
+    def detect_zero_usage(self, df, column='total_tokens', consecutive_days=3):
+        """检测零使用"""
+        anomalies = []
+        zero_count = 0
+        start_time = None
+        for _, row in df.iterrows():
+            if row[column] == 0:
+                if zero_count == 0:
+                    start_time = row['time']
+                zero_count += 1
+            else:
+                if zero_count >= consecutive_days:
+                    anomalies.append({
+                        'start_time': start_time,
+                        'duration_days': zero_count,
+                        'type': 'zero_usage',
+                        'severity': 'high'
+                    })
+                zero_count = 0
+        return anomalies
+
+    def detect_pattern_change(self, df, column='total_tokens', window=7):
+        """检测模式变化"""
+        if len(df) < window * 4:
+            return []
+        anomalies = []
+        df['rolling_mean'] = df[column].rolling(window).mean()
+        for i in range(window * 2, len(df)):
+            prev_mean = df.iloc[i-window*2:i-window]['rolling_mean'].mean()
+            curr_mean = df.iloc[i-window:i]['rolling_mean'].mean()
+            if prev_mean > 0:
+                change_ratio = abs(curr_mean - prev_mean) / prev_mean
+                if change_ratio > 0.5:
+                    anomalies.append({
+                        'time': df.iloc[i]['time'],
+                        'type': 'pattern_change',
+                        'change_ratio': change_ratio,
+                        'severity': 'medium'
+                    })
+        return anomalies
+```
+
+### 6.3 应用场景聚类分析
+
+```python
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+
+class AppClusterAnalyzer:
+    def cluster_by_usage_pattern(self, app_data):
+        """基于使用模式聚类应用"""
+        # 特征: 各模型使用占比
+        features = []
+        app_names = []
+        for app_name in app_data['app_name'].unique():
+            app_df = app_data[app_data['app_name'] == app_name]
+            total = app_df['total_tokens'].sum()
+            if total == 0:
+                continue
+            feature_vector = app_df.groupby('model_slug')['total_tokens'].sum() / total
+            features.append(feature_vector.fillna(0))
+            app_names.append(app_name)
+
+        if len(features) < 3:
+            return {'clusters': {}}
+
+        # K-Means 聚类
+        scaler = StandardScaler()
+        X = scaler.fit_transform(pd.DataFrame(features).fillna(0))
+        n_clusters = min(5, len(features) // 2)
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        labels = kmeans.fit_predict(X)
+
+        clusters = {}
+        for i, label in enumerate(labels):
+            if label not in clusters:
+                clusters[label] = []
+            clusters[label].append(app_names[i])
+
+        return {'clusters': clusters}
+```
+
+## 七、后端 API 设计
+
+```python
+# FastAPI 端点
+
+# --- 趋势数据 API ---
+GET  /api/v1/trends/models/{model_slug}    # 获取单个模型的调用量趋势
+GET  /api/v1/trends/apps/{app_name}        # 获取单个应用的使用趋势
+GET  /api/v1/trends/compare                # 多模型对比
+
+# --- 分布数据 API ---
+GET  /api/v1/distribution/apps             # 获取应用使用分布
+GET  /api/v1/distribution/models           # 获取模型使用分布
+
+# --- 异常告警 API ---
+GET  /api/v1/alerts                        # 获取异常告警列表
+POST /api/v1/alerts/{id}/acknowledge       # 确认告警
+
+# --- 元数据 API ---
+GET  /api/v1/models                        # 获取模型列表
+GET  /api/v1/apps                          # 获取应用列表
+```
+
+## 八、前端展示层设计
+
+### 8.1 核心页面
+
+1. **总览页** - 关键指标卡片 + 趋势概览
+2. **模型趋势页** - 折线图 + 移动均线 + 异常标记
+3. **应用分布页** - 堆叠面积图 + 饼图
+4. **异常告警页** - 告警列表 + 确认操作
+5. **报表页** - 数据导出 + 自定义报表
+
+### 8.2 核心图表类型
+
+- **折线图**: 模型调用量趋势 + 移动均线
+- **堆叠面积图**: 多应用使用量对比
+- **热力图**: 模型-应用使用矩阵
+- **饼图**: 应用场景分布占比
+
+### 8.3 交互功能
+
+- 日期范围选择 (快捷 + 自定义)
+- 模型/应用多选筛选
+- 指标切换 (tokens/requests)
+- 图表缩放拖拽
+- 数据导出 (CSV/Excel/图片)
+
+## 九、实施路线图
+
+### Phase 1: 数据采集层扩展 (1-2周)
+- 创建 `trend_tracker` 目录结构
+- 实现调度器基础框架
+- 集成现有爬虫模块
+
+### Phase 2: 数据存储层 (1周)
+- 安装配置 TimescaleDB
+- 创建数据表和索引
+- 设置保留和压缩策略
+
+### Phase 3: 数据分析层 (1-2周)
+- 实现趋势分析算法
+- 实现异常检测算法
+- 实现聚类分析
+
+### Phase 4: 后端 API 开发 (1-2周)
+- 实现核心 API 端点
+- 实现分析服务
+
+### Phase 5: 前端开发 (2-3周)
+- React 项目初始化
+- 核心页面开发
+- 图表组件实现
+
+### Phase 6: 部署与测试 (1周)
+- Docker Compose 配置
+- 生产环境部署
+- 测试与优化
+
+**总计**: 7-12 周
